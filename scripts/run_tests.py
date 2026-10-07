@@ -25,6 +25,8 @@ test_files = [
     "test_dns.py",
     "test_routing.py",
     "test_proxyip.py",
+    "test_access.py",
+    "test_railway.py",
     "test_migration.py"
 ]
 

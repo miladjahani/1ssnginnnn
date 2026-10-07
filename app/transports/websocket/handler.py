@@ -6,6 +6,7 @@ from app.protocols.vless.parser import parse_vless_header, build_vless_response_
 from app.protocols.trojan.parser import parse_trojan_header, compute_trojan_hash
 from app.networking.relay import connect_outbound
 from app.services.repository import repo
+from app.services.access import user_access_error
 
 logger = logging.getLogger("miliconfig.websocket")
 
@@ -53,8 +54,9 @@ async def handle_websocket_connection(websocket: WebSocket, path_param: str = ""
                 await websocket.close(code=1008)
                 return
 
-            if authenticated_user.status != "active":
-                logger.warning(f"VLESS rejected: user {authenticated_user.username} is {authenticated_user.status}")
+            access_error = user_access_error(authenticated_user)
+            if access_error:
+                logger.warning(f"VLESS rejected: user {authenticated_user.username} ({access_error})")
                 await websocket.close(code=1008)
                 return
 
@@ -102,8 +104,9 @@ async def handle_websocket_connection(websocket: WebSocket, path_param: str = ""
                 await websocket.close(code=1008)
                 return
 
-            if authenticated_user.status != "active":
-                logger.warning(f"Trojan rejected: user {authenticated_user.username} is {authenticated_user.status}")
+            access_error = user_access_error(authenticated_user)
+            if access_error:
+                logger.warning(f"Trojan rejected: user {authenticated_user.username} ({access_error})")
                 await websocket.close(code=1008)
                 return
 

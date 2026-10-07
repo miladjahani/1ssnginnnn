@@ -82,7 +82,7 @@ MILICONFIG completely replaces the Cloudflare runtime dependencies with an enter
                            |           Internet Clients             |
                            +----------------------------------------+
                                         |              |
-                    HTTPS / WSS / xHTTP |              | ShadowSocks TCP/UDP
+                    HTTPS / WSS / xHTTP |              | ShadowSocks TCP
                                         v              v
 +-----------------------------------------------------------------------------------+
 | Railway / Docker Container Environment                                            |
@@ -108,7 +108,7 @@ MILICONFIG completely replaces the Cloudflare runtime dependencies with an enter
 |                                                                                   |
 |  +-----------------------------------------------------------------------------+  |
 |  |                      ShadowSocks Asyncio Engine                             |  |
-|  |  - Native Python TCP & UDP Relay Server                                     |  |
+|  |  - Native Python TCP Relay Server (AEAD ShadowSocks)                        |  |
 |  |  - Standard AEAD Ciphers (chacha20-poly1305, aes-256-gcm, aes-128-gcm)      |  |
 |  |  - Per-User Credentials & Dynamic Multi-Port Listener                       |  |
 |  +-----------------------------------------------------------------------------+  |

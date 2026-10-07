@@ -6,6 +6,7 @@ from typing import List, Dict, Any, Optional, Tuple
 from app.config import settings
 from app.models.models import User, Node, ShadowSocksCredential
 from app.services.repository import repo
+from app.services.access import user_access_error
 
 class SubscriptionEngine:
     def format_client_node_name(self, base_name: str, index: int = 1, region: str = "US", protocol: str = "VLESS") -> str:
@@ -45,6 +46,39 @@ class SubscriptionEngine:
     def resolve_domain(self, node: Node, request_host: Optional[str] = None) -> str:
         clean_host = (request_host or "").split(":")[0].strip() or settings.DEFAULT_DOMAIN
         return node.sni or node.host or clean_host
+
+    def resolve_ss_endpoint(self, ss_cred: ShadowSocksCredential, request_host: Optional[str] = None) -> Tuple[str, int]:
+        """
+        Resolve the client-facing ShadowSocks host/port.
+
+        Railway only exposes the container through the HTTPS edge unless a TCP
+        proxy is configured, so an explicit public endpoint (SS_PUBLIC_HOST /
+        SS_PUBLIC_PORT or the RAILWAY_TCP_PROXY_* variables) always wins.
+        """
+        host = (ss_cred.server or "").strip()
+        port = int(ss_cred.port or settings.SS_PORT)
+
+        public_host, public_port = settings.ss_public_endpoint
+        if public_host:
+            return public_host, int(public_port or port)
+
+        if not host or host in ("127.0.0.1", "localhost", "0.0.0.0"):
+            host = (request_host or "").split(":")[0].strip() or settings.DEFAULT_DOMAIN
+        return host, port
+
+    def is_ss_publishable(self, ss_cred: Optional[ShadowSocksCredential]) -> bool:
+        """Never advertise a ShadowSocks node that clients cannot actually reach."""
+        if not ss_cred or not ss_cred.enabled:
+            return False
+        public_host, _ = settings.ss_public_endpoint
+        if public_host:
+            return True
+        host = (ss_cred.server or "").strip()
+        if host and host not in ("127.0.0.1", "localhost", "0.0.0.0"):
+            return True
+        # Local listener: reachable in local/VPS deployments, but on Railway the
+        # port is not exposed to the internet without a TCP proxy.
+        return not settings.running_on_railway
 
     def generate_vless_uri(self, user: User, node: Node, index: int = 1, request_host: Optional[str] = None) -> str:
         addr, port, tls = self.resolve_effective_address_and_port(node, request_host)
@@ -87,11 +121,9 @@ class SubscriptionEngine:
         name = f"miliconfig-{index:02d} • SS ({ss_cred.method})"
         user_info = f"{ss_cred.method}:{ss_cred.password}"
         b64_info = base64.urlsafe_b64encode(user_info.encode("utf-8")).decode("utf-8").rstrip("=")
-        host = ss_cred.server
-        if not host or host in ("127.0.0.1", "localhost", "0.0.0.0"):
-            host = (request_host or "").split(":")[0] or settings.DEFAULT_DOMAIN
+        host, port = self.resolve_ss_endpoint(ss_cred, request_host)
         tag = urllib.parse.quote(name)
-        return f"ss://{b64_info}@{host}:{ss_cred.port}#{tag}"
+        return f"ss://{b64_info}@{host}:{port}#{tag}"
 
     def generate_base64_subscription(self, user: User, nodes: List[Node], ss_cred: Optional[ShadowSocksCredential] = None, request_host: Optional[str] = None) -> str:
         """Generate standard Base64 URI list for V2Ray, V2RayNG, Shadowrocket, Nekoray."""
@@ -102,7 +134,7 @@ class SubscriptionEngine:
             elif node.protocol.lower() == "trojan":
                 links.append(self.generate_trojan_uri(user, node, idx, request_host))
 
-        if ss_cred and ss_cred.enabled:
+        if self.is_ss_publishable(ss_cred):
             links.append(self.generate_shadowsocks_uri(user, ss_cred, len(links) + 1, request_host))
 
         raw_text = "\n".join(links)
@@ -154,17 +186,15 @@ class SubscriptionEngine:
             
             proxies.append({k: v for k, v in p_dict.items() if v is not None})
 
-        if ss_cred and ss_cred.enabled:
+        if self.is_ss_publishable(ss_cred):
             ss_name = f"miliconfig-{len(proxy_names)+1:02d} • SS ({ss_cred.method})"
-            ss_host = ss_cred.server
-            if not ss_host or ss_host in ("127.0.0.1", "localhost", "0.0.0.0"):
-                ss_host = (request_host or "").split(":")[0] or settings.DEFAULT_DOMAIN
+            ss_host, ss_port = self.resolve_ss_endpoint(ss_cred, request_host)
             proxy_names.append(ss_name)
             proxies.append({
                 "name": ss_name,
                 "type": "ss",
                 "server": ss_host,
-                "port": ss_cred.port,
+                "port": ss_port,
                 "cipher": ss_cred.method,
                 "password": ss_cred.password,
                 "udp": bool(ss_cred.udp)
@@ -261,17 +291,15 @@ class SubscriptionEngine:
                 }
             outbounds.append(ob)
 
-        if ss_cred and ss_cred.enabled:
+        if self.is_ss_publishable(ss_cred):
             ss_tag = f"miliconfig-{len(tags)+1:02d} • SS ({ss_cred.method})"
-            ss_host = ss_cred.server
-            if not ss_host or ss_host in ("127.0.0.1", "localhost", "0.0.0.0"):
-                ss_host = (request_host or "").split(":")[0] or settings.DEFAULT_DOMAIN
+            ss_host, ss_port = self.resolve_ss_endpoint(ss_cred, request_host)
             tags.append(ss_tag)
             outbounds.append({
                 "type": "shadowsocks",
                 "tag": ss_tag,
                 "server": ss_host,
-                "server_port": ss_cred.port,
+                "server_port": ss_port,
                 "method": ss_cred.method,
                 "password": ss_cred.password
             })
@@ -345,8 +373,9 @@ class SubscriptionEngine:
         if not user:
             return 404, "User subscription not found", "text/plain; charset=utf-8"
 
-        if user.status != "active":
-            return 403, f"Subscription suspended: user is {user.status}", "text/plain; charset=utf-8"
+        access_error = user_access_error(user)
+        if access_error:
+            return 403, f"Subscription unavailable: {access_error}", "text/plain; charset=utf-8"
 
         nodes = repo.list_nodes(enabled_only=True)
         ss_cred = repo.get_ss_by_user_id(user.id)

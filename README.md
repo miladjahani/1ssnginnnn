@@ -20,7 +20,7 @@
   - **VLESS**: Binary packet parser with UUID auth, TCP stream, and UDP/DNS proxying.
   - **Trojan**: SHA224 password hashing, CRLF frame validation, and streaming.
   - **xHTTP**: HTTP POST chunked streaming transport with anti-DPI randomized padding headers.
-  - **ShadowSocks (AEAD)**: Native Python asyncio TCP & UDP server supporting `chacha20-ietf-poly1305`, `aes-256-gcm`, and `aes-128-gcm` with per-user credentials.
+  - **ShadowSocks (AEAD)**: Native Python asyncio TCP server supporting `chacha20-ietf-poly1305`, `aes-256-gcm`, and `aes-128-gcm` with per-user credentials (UDP credentials are stored per user but the UDP relay is not implemented yet).
 - **Client-Facing Node Naming**: All client-visible nodes are strictly prefixed with `miliconfig` (e.g. `miliconfig-01 • US Premium`, `miliconfig • VLESS`, `miliconfig • ShadowSocks`).
 - **Universal Subscription Engine**:
   - Automatically identifies client `User-Agent` (Clash, Sing-box, V2RayNG, Shadowrocket, Surge, Loon, etc.).
@@ -38,7 +38,7 @@
                            |           Internet Clients             |
                            +----------------------------------------+
                                         |              |
-                    HTTPS / WSS / xHTTP |              | ShadowSocks TCP/UDP
+                    HTTPS / WSS / xHTTP |              | ShadowSocks TCP
                                         v              v
 +-----------------------------------------------------------------------------------+
 | Railway / Docker Container Environment                                            |
@@ -63,7 +63,7 @@
 |                                                                                   |
 |  +-----------------------------------------------------------------------------+  |
 |  |                      ShadowSocks Asyncio Engine                             |  |
-|  |  - Native Python TCP & UDP Relay Server                                     |  |
+|  |  - Native Python TCP Relay Server (AEAD ShadowSocks)                        |  |
 |  |  - Standard AEAD Ciphers (chacha20-poly1305, aes-256-gcm, aes-128-gcm)      |  |
 |  |  - Per-User Credentials & Dynamic Multi-Port Listener                       |  |
 |  +-----------------------------------------------------------------------------+  |
@@ -126,13 +126,24 @@ The application will automatically initialize the database schema and be accessi
 MILICONFIG is fully pre-configured for Railway:
 1. Log in to [Railway.app](https://railway.app/).
 2. Create a **New Project** and select **Deploy from GitHub repo**.
-3. Choose your `miliconfig` repository.
-4. Add a **PostgreSQL** database service within the project.
-5. In your MILICONFIG service settings:
-   - Railway will automatically detect `Dockerfile` and `railway.toml`.
-   - Set the environment variable `DATABASE_URL` referencing the PostgreSQL service (or Railway will inject it automatically).
-   - Change `SECRET_KEY`, `ADMIN_PASSWORD`, and `JWT_SECRET`.
-6. Click **Deploy**. Railway will assign a public domain and route traffic to the container.
+3. Choose your `miliconfig` repository (Railway detects `Dockerfile` via `railway.json` / `railway.toml`).
+4. Add a **Volume** to the service and mount it at `/data`, so the SQLite database survives redeploys.
+5. In your MILICONFIG service settings set `SECRET_KEY`, `ADMIN_PASSWORD`, `JWT_SECRET` and (optionally) `PUBLIC_BASE_URL` / `DEFAULT_DOMAIN` to your Railway domain.
+6. Click **Deploy**. Railway assigns a public HTTPS domain and routes traffic (panel, subscriptions and VLESS/Trojan WebSockets) to the container.
+
+> **Database note:** this build ships its own SQLite engine. `DATABASE_URL` accepts `sqlite:///...`
+> paths; a PostgreSQL URL cannot be honoured and the service logs a warning and falls back to
+> `/data/miliconfig.db`. Attach a Railway **Volume at `/data`** for persistence.
+
+#### Optional: ShadowSocks on Railway
+Railway only publishes the container through its HTTPS edge, so the ShadowSocks listener
+(`SS_PORT`, default `8388`) is not reachable from the internet by default:
+1. Enable **TCP Proxy** for the service in Railway and target the same port you set in `SS_PORT`
+   (Railway then injects `RAILWAY_TCP_APPLICATION_PORT`, `RAILWAY_TCP_PROXY_DOMAIN` and
+   `RAILWAY_TCP_PROXY_PORT`).
+2. The subscription engine automatically advertises the public `RAILWAY_TCP_PROXY_DOMAIN:RAILWAY_TCP_PROXY_PORT`
+   endpoint. Without a TCP proxy the `ss://` node is intentionally left out of subscriptions so
+   clients never receive a dead configuration.
 
 ---
 
@@ -141,7 +152,8 @@ MILICONFIG is fully pre-configured for Railway:
 | Variable | Description | Default |
 | :--- | :--- | :--- |
 | `PORT` | Web and proxy listening port | `8000` |
-| `DATABASE_URL` | SQLite or PostgreSQL connection string | `sqlite:///./miliconfig.db` |
+| `DATABASE_URL` | SQLite connection string (`sqlite:///...`) | `sqlite:///./miliconfig.db` |
+| `DATA_DIR` | Directory holding the SQLite file (mount a Railway Volume here) | `/data` if mounted, else app dir |
 | `SECRET_KEY` | Application encryption secret | Random hex string |
 | `JWT_SECRET` | Admin session JWT signature key | Random hex string |
 | `ADMIN_USERNAME` | Superadmin username | `admin` |
@@ -149,7 +161,8 @@ MILICONFIG is fully pre-configured for Railway:
 | `PUBLIC_BASE_URL` | Public HTTPS URL for subscription generation | `http://localhost:8000` |
 | `DEFAULT_DOMAIN` | Fallback SNI/Host domain | `localhost` |
 | `ENABLE_SHADOWSOCKS` | Enable background ShadowSocks server | `true` |
-| `SS_PORT` | ShadowSocks TCP/UDP listening port | `8388` |
+| `SS_PORT` | ShadowSocks TCP listening port (falls back to `RAILWAY_TCP_APPLICATION_PORT`) | `8388` |
+| `SS_PUBLIC_HOST` / `SS_PUBLIC_PORT` | Public ShadowSocks endpoint advertised in subscriptions (falls back to `RAILWAY_TCP_PROXY_DOMAIN` / `RAILWAY_TCP_PROXY_PORT`) | unset |
 | `SS_DEFAULT_METHOD`| Default AEAD cipher | `chacha20-ietf-poly1305` |
 | `OUTBOUND_MODE` | Outbound mode (`""`, `no`, `only`) | `""` |
 | `OUTBOUND_PROXY` | Upstream proxy (`socks5://...` or `http://...`)| `""` |

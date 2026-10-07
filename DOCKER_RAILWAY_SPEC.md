@@ -11,10 +11,11 @@ MILICONFIG is engineered for zero-friction containerized deployment across local
 ### 2.1 Base Image & Hardening
 - **Base Image**: `python:3.12-slim-bookworm`
 - **Security Principles**:
-  - Run as non-root user (`miliconfig:miliconfig`, UID/GID 10001).
   - No build tools left in final image layers (`--no-cache-dir`).
-  - Read-only container root support where applicable, with `/tmp` and `/data` volume mounts.
-  - Proper signal handling for graceful shutdown (`SIGTERM` initiates connection draining).
+  - The process runs as the image default user so a Railway Volume mounted at `/data` stays writable;
+    switch to a dedicated non-root user only together with `chown` of the volume mount.
+  - Persistent state lives exclusively under the `DATA_DIR` mount (`/data`); nothing else needs to be writable.
+  - Proper signal handling for graceful shutdown (`SIGTERM` drains connections through uvicorn).
 
 ### 2.2 Entrypoint & Port Binding
 - **Command**:
@@ -24,7 +25,8 @@ MILICONFIG is engineered for zero-friction containerized deployment across local
 - **Dynamic Port**: Binds to `$PORT` provided by Railway runtime or defaults to `8000`.
 
 ### 2.3 Healthcheck
-- Standard Docker HEALTHCHECK configured to query `/health`:
+- Railway uses `healthcheckPath = "/health"` (see `railway.json` / `railway.toml`) and the image ships
+  a matching Docker `HEALTHCHECK` that queries `/health`:
   ```dockerfile
   HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
       CMD python3 -c "import urllib.request, os; port = os.environ.get('PORT', '8000'); urllib.request.urlopen(f'http://127.0.0.1:{port}/health')" || exit 1
@@ -71,8 +73,17 @@ When connecting the MILICONFIG repository to Railway:
 | `DNS_SERVERS` | Fallback upstream DNS list | `1.1.1.1,8.8.8.8,https://223.5.5.5/dns-query` |
 
 ### 4.3 Database Strategy on Railway
-- **Development / Standalone**: If `DATABASE_URL` is omitted, MILICONFIG defaults to an embedded SQLite database at `/data/miliconfig.db`.
-- **Production**: When the Railway PostgreSQL plugin is provisioned, `DATABASE_URL` is populated automatically. MILICONFIG automatically initializes schemas and runs migration routines on startup.
+- MILICONFIG ships a dedicated SQLite engine (`app/database.py`); the schema is created and
+  migrated automatically on startup.
+- **Storage selection order**:
+  1. An explicit `DATABASE_URL=sqlite:///...` path (absolute paths recommended on Railway).
+  2. `DATA_DIR/miliconfig.db` when that directory exists - i.e. a Railway **Volume mounted at `/data`**.
+  3. `./miliconfig.db` inside the container (ephemeral).
+  4. `/tmp/miliconfig.db` as a last resort.
+- A PostgreSQL-style `DATABASE_URL` is rejected with a startup warning and the service falls back to
+  the paths above; attach a Volume at `/data` for durable data.
+- **Production checklist**: mount a Volume at `/data`, then verify `GET /ready` reports
+  `"database": "connected"`.
 
 ---
 

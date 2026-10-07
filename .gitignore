@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local databases & runtime state
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+
+# Local environment / secrets
+.env
+.env.local
+
+# Tooling
+.pytest_cache/
+.DS_Store

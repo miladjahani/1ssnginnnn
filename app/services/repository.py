@@ -3,6 +3,7 @@ import uuid
 import secrets
 from typing import Optional, List, Dict, Any
 from app.database import db
+from app.config import settings
 from app.models.models import (
     User, Admin, Node, ShadowSocksCredential, Subscription,
     TrafficUsage, Session, AuditLog, ProxyIP, Region, Setting,
@@ -258,7 +259,7 @@ class Repository:
     def create_or_update_ss(self, user_id: int, password: str, method: str = "chacha20-ietf-poly1305",
                             port: Optional[int] = None, server: str = "127.0.0.1", udp: bool = True) -> ShadowSocksCredential:
         existing = self.get_ss_by_user_id(user_id)
-        target_port = port or 8388
+        target_port = port or settings.SS_PORT
         conn = self.db.get_connection()
         cur = conn.cursor()
         if existing:

@@ -3,14 +3,46 @@ import os
 import struct
 import logging
 from typing import Dict, Optional, Tuple
+from app.config import settings
 from app.protocols.shadowsocks.crypto import (
     CIPHER_CONFIGS, evp_bytes_to_key, derive_subkey,
     AEADCipherState, parse_ss_target_address
 )
 from app.networking.relay import connect_outbound
 from app.services.repository import repo
+from app.services.access import user_access_error
 
 logger = logging.getLogger("miliconfig.shadowsocks")
+
+DEFAULT_METHOD = "chacha20-ietf-poly1305"
+MAX_SALT_SIZE = max(c["salt_size"] for c in CIPHER_CONFIGS.values())
+MAX_TAG_SIZE = max(c["tag_size"] for c in CIPHER_CONFIGS.values())
+# Enough bytes to validate the first AEAD chunk for any supported cipher without
+# consuming socket data (needed because AES-128-GCM uses a 16 byte salt).
+PEEK_SIZE = MAX_SALT_SIZE + 2 + MAX_TAG_SIZE
+
+
+class _PrefixedReader:
+    """StreamReader facade that can be replayed with a shared peek buffer."""
+
+    def __init__(self, reader: asyncio.StreamReader, prefix: bytes = b""):
+        self._reader = reader
+        self._buffer = bytes(prefix)
+
+    async def readexactly(self, n: int) -> bytes:
+        while len(self._buffer) < n:
+            try:
+                chunk = await self._reader.readexactly(n - len(self._buffer))
+            except asyncio.IncompleteReadError as e:
+                # Keep whatever partial data arrived so error handling loses nothing.
+                self._buffer += e.partial
+                raise
+            if not chunk:
+                raise asyncio.IncompleteReadError(partial=self._buffer, expected=n)
+            self._buffer += chunk
+        out, self._buffer = self._buffer[:n], self._buffer[n:]
+        return out
+
 
 class ShadowSocksServer:
     def __init__(self, host: str = "0.0.0.0", port: int = 8388):
@@ -38,6 +70,57 @@ class ShadowSocksServer:
             self.is_running = False
             logger.info("ShadowSocks server stopped")
 
+    def _try_credentials(self, peek: bytes, active_creds) -> Tuple[Optional[object], Optional[AEADCipherState], Optional[Dict], int]:
+        """
+        Identify the credential whose AEAD tag validates the first length chunk.
+
+        Every candidate gets a replayed reader over the shared peek buffer, so a
+        failed attempt never consumes socket bytes.
+        """
+        for cred in active_creds:
+            cfg = CIPHER_CONFIGS.get(cred.method, CIPHER_CONFIGS[DEFAULT_METHOD])
+            salt_size, tag_size = cfg["salt_size"], cfg["tag_size"]
+            if len(peek) < salt_size + 2 + tag_size:
+                continue
+            salt = peek[:salt_size]
+            enc_len_chunk = peek[salt_size:salt_size + 2 + tag_size]
+            master_key = evp_bytes_to_key(cred.password, cfg["key_size"])
+            subkey = derive_subkey(master_key, salt, cfg["key_size"])
+            cipher = AEADCipherState(cred.method, subkey)
+            try:
+                payload_len = struct.unpack("!H", cipher.decrypt(enc_len_chunk))[0]
+            except Exception:
+                continue
+            return cred, cipher, cfg, payload_len
+        return None, None, None, None
+
+    async def _read_initial_chunk(self, client_reader: asyncio.StreamReader, active_creds):
+        """
+        Buffer just enough bytes to identify the credential and first frame.
+
+        Reading is incremental: as soon as any candidate cipher validates we stop,
+        so clients that send a small first write (AES-128-GCM uses a 16 byte salt)
+        are not kept waiting for the largest possible header.
+        """
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + 5.0
+        peek = b""
+        while True:
+            cred, cipher, cfg, payload_len = self._try_credentials(peek, active_creds)
+            if cred is not None:
+                return peek, cred, cipher, cfg, payload_len
+            if len(peek) >= PEEK_SIZE:
+                break
+            timeout = max(0.1, deadline - loop.time())
+            try:
+                chunk = await asyncio.wait_for(client_reader.read(PEEK_SIZE - len(peek)), timeout=timeout)
+            except asyncio.TimeoutError:
+                break
+            if not chunk:
+                break
+            peek += chunk
+        return peek, None, None, None, 0
+
     async def handle_client(self, client_reader: asyncio.StreamReader, client_writer: asyncio.StreamWriter):
         """Handle incoming AEAD ShadowSocks TCP connection."""
         active_creds = repo.list_all_active_ss()
@@ -45,57 +128,37 @@ class ShadowSocksServer:
             client_writer.close()
             return
 
-        # Default to chacha20-ietf-poly1305 config
-        cfg = CIPHER_CONFIGS["chacha20-ietf-poly1305"]
-        salt_size = cfg["salt_size"]
-
-        try:
-            salt = await client_reader.readexactly(salt_size)
-        except Exception:
-            client_writer.close()
-            return
-
-        # Attempt to decrypt first chunk with available user credentials
-        authenticated_user = None
-        decrypt_state = None
-        matched_cred = None
-
-        # Peek / read the first 2-byte encrypted length + 16-byte tag (18 bytes total)
-        try:
-            enc_len_chunk = await client_reader.readexactly(2 + cfg["tag_size"])
-        except Exception:
-            client_writer.close()
-            return
-
-        for cred in active_creds:
-            c_cfg = CIPHER_CONFIGS.get(cred.method, cfg)
-            master_key = evp_bytes_to_key(cred.password, c_cfg["key_size"])
-            subkey = derive_subkey(master_key, salt, c_cfg["key_size"])
-            temp_cipher = AEADCipherState(cred.method, subkey)
-            try:
-                dec_len_bytes = temp_cipher.decrypt(enc_len_chunk)
-                payload_len = struct.unpack("!H", dec_len_bytes)[0]
-                authenticated_user = repo.get_user_by_id(cred.user_id)
-                decrypt_state = temp_cipher
-                matched_cred = cred
-                break
-            except Exception:
-                continue
-
-        if not authenticated_user or not decrypt_state:
+        peek, matched_cred, decrypt_state, cfg, payload_len = await self._read_initial_chunk(client_reader, active_creds)
+        if not matched_cred or decrypt_state is None or cfg is None:
             logger.warning("ShadowSocks authentication failed: no matching credentials")
             client_writer.close()
             return
 
-        # Check user status
-        if authenticated_user.status != "active":
-            logger.warning(f"ShadowSocks connection rejected: user {authenticated_user.username} is {authenticated_user.status}")
+        authenticated_user = repo.get_user_by_id(matched_cred.user_id)
+        access_error = user_access_error(authenticated_user)
+        if access_error:
+            username = authenticated_user.username if authenticated_user else "unknown"
+            logger.warning(f"ShadowSocks connection rejected: user {username} ({access_error})")
             client_writer.close()
             return
 
-        # Read encrypted payload of length + tag
-        enc_payload = await client_reader.readexactly(payload_len + cfg["tag_size"])
-        dec_payload = decrypt_state.decrypt(enc_payload)
+        salt_size, tag_size = cfg["salt_size"], cfg["tag_size"]
+        encrypted_reader = _PrefixedReader(client_reader, peek)
+        try:
+            await encrypted_reader.readexactly(salt_size)          # client salt (already validated)
+            await encrypted_reader.readexactly(2 + tag_size)        # encrypted length chunk (already validated)
+            enc_payload = await encrypted_reader.readexactly(payload_len + tag_size)
+        except Exception as e:
+            logger.warning(f"ShadowSocks truncated request: {e}")
+            client_writer.close()
+            return
+
+        try:
+            dec_payload = decrypt_state.decrypt(enc_payload)
+        except Exception as e:
+            logger.warning(f"ShadowSocks payload decryption failed: {e}")
+            client_writer.close()
+            return
 
         # Parse target address and initial data
         ok, target_addr, target_port, initial_data, err = parse_ss_target_address(dec_payload)
@@ -119,8 +182,8 @@ class ShadowSocksServer:
             remote_writer.write(initial_data)
             await remote_writer.drain()
 
-        # Initialize server-to-client encryptor
-        server_salt = os.urandom(cfg["salt_size"])
+        # Initialize server-to-client encryptor (salt size follows the *matched* cipher)
+        server_salt = os.urandom(salt_size)
         server_master_key = evp_bytes_to_key(matched_cred.password, cfg["key_size"])
         server_subkey = derive_subkey(server_master_key, server_salt, cfg["key_size"])
         encrypt_state = AEADCipherState(matched_cred.method, server_subkey)
@@ -129,18 +192,21 @@ class ShadowSocksServer:
         client_writer.write(server_salt)
         await client_writer.drain()
 
-        # Traffic counters
-        total_up = len(salt) + len(enc_len_chunk) + len(enc_payload)
+        # Traffic counters (salt + length chunk + payload chunk, including AEAD tags)
+        total_up = len(peek) + len(enc_payload)
         total_down = len(server_salt)
 
         async def c2r():
             nonlocal total_up
             try:
                 while True:
-                    len_bytes_enc = await client_reader.readexactly(2 + cfg["tag_size"])
-                    len_bytes = decrypt_state.decrypt(len_bytes_enc)
+                    len_bytes_enc = await encrypted_reader.readexactly(2 + tag_size)
+                    try:
+                        len_bytes = decrypt_state.decrypt(len_bytes_enc)
+                    except Exception:
+                        break
                     chunk_len = struct.unpack("!H", len_bytes)[0]
-                    chunk_enc = await client_reader.readexactly(chunk_len + cfg["tag_size"])
+                    chunk_enc = await encrypted_reader.readexactly(chunk_len + tag_size)
                     chunk = decrypt_state.decrypt(chunk_enc)
                     remote_writer.write(chunk)
                     await remote_writer.drain()
@@ -177,4 +243,5 @@ class ShadowSocksServer:
         await asyncio.gather(c2r(), r2c())
         repo.record_user_traffic(authenticated_user.id, total_up, total_down)
 
-ss_server = ShadowSocksServer()
+
+ss_server = ShadowSocksServer(host=settings.SS_BIND_HOST, port=settings.SS_PORT)

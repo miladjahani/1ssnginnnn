@@ -8,6 +8,7 @@ from fastapi.responses import StreamingResponse
 from app.protocols.vless.parser import parse_vless_header, build_vless_response_header
 from app.networking.relay import connect_outbound
 from app.services.repository import repo
+from app.services.access import user_access_error
 
 def generate_padding(length: int = 128) -> str:
     """Generate pseudo-random padding string for anti-DPI obfuscation."""
@@ -40,8 +41,9 @@ async def handle_xhttp_request(request: Request) -> Response:
         return Response(f"Protocol error: {err}", status_code=400)
 
     user = repo.get_user_by_uuid(vless_req.user_uuid)
-    if not user or user.status != "active":
-        return Response("Unauthorized", status_code=403)
+    access_error = user_access_error(user)
+    if access_error:
+        return Response(f"Unauthorized: {access_error}", status_code=403)
 
     try:
         remote_reader, remote_writer = await connect_outbound(vless_req.target_address, vless_req.target_port)

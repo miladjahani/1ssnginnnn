@@ -17,7 +17,10 @@ from app.transports.xhttp.handler import handle_xhttp_request
 from app.protocols.shadowsocks.server import ss_server
 from app.networking.dns import dns_resolver
 
-logging.basicConfig(level=getattr(logging, settings.LOG_LEVEL, logging.INFO))
+_log_level = getattr(logging, str(settings.LOG_LEVEL or "INFO").strip().upper(), logging.INFO)
+if not isinstance(_log_level, int):
+    _log_level = logging.INFO
+logging.basicConfig(level=_log_level)
 logger = logging.getLogger("miliconfig.main")
 
 app = FastAPI(

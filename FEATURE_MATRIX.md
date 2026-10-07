@@ -17,7 +17,7 @@ This matrix outlines every feature present in the original `byjoey/cfnew` codeba
 | **UUID Path** | ✓ | ✓ | ✓ | Direct UUID endpoint path routing (`/{uuid}`) with format verification |
 | **User-Agent detection** | ✓ | ✓ | ✓ | Automatic client UA parsing (Clash, Sing-box, V2Ray, Shadowrocket, Surge, etc.) |
 | **Subscription** | ✓ | ✓ | ✓ | Multi-format subscription generator (Base64, Clash/Mihomo, Sing-box, V2Ray) |
-| **ShadowSocks** | **NEW** | ✓ | ✓ | Native Python asyncio AEAD ShadowSocks server (chacha20-poly1305, aes-256-gcm) |
+| **ShadowSocks** | **NEW** | ✓ | ✓ | Native Python asyncio AEAD ShadowSocks TCP server (chacha20-poly1305, aes-256-gcm, aes-128-gcm) |
 | **Multi User** | **NEW** | ✓ | ✓ | Relational User model with UUID, token, traffic quota, expiry, and device tracking |
 | **Admin Panel** | **NEW** | ✓ | ✓ | Dark Glassmorphic Neon dashboard with management tabs and zero fake metrics |
 
@@ -38,7 +38,7 @@ This matrix outlines every feature present in the original `byjoey/cfnew` codeba
   - Implements the HTTP POST streaming transport used in cfnew.
   - Generates and verifies anti-censorship padding query parameters and headers (`X-Padding`).
 - **ShadowSocks Engine (NEW)**:
-  - Complete Python asyncio TCP & UDP implementation.
+  - Complete Python asyncio TCP implementation (UDP credentials are provisioned per user; UDP relay is not implemented yet).
   - Supported modern AEAD ciphers: `chacha20-ietf-poly1305`, `aes-256-gcm`, `aes-128-gcm`.
   - Individual per-user credentials and port configuration.
   - Emits real `ss://` subscription links compatible with all standard clients.

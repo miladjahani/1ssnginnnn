@@ -102,5 +102,67 @@ class TestShadowSocks(unittest.TestCase):
 
         asyncio.run(_run_integration())
 
+
+    def test_shadowsocks_aes128gcm_and_chacha20_end_to_end(self):
+        """Both AES-128-GCM (16B salt) and ChaCha20-Poly1305 must relay real traffic."""
+        async def _run(cipher_name: str, client_port: int, echo_port: int, password: str, method: str):
+            user = repo.create_user(f"ss_e2e_{uuid.uuid4().hex[:8]}", "SS E2E")
+            repo.create_or_update_ss(user.id, password=password, method=method, port=client_port)
+
+            async def echo(reader, writer):
+                try:
+                    while True:
+                        data = await reader.read(4096)
+                        if not data:
+                            break
+                        writer.write(data)
+                        await writer.drain()
+                finally:
+                    writer.close()
+
+            echo_srv = await asyncio.start_server(echo, "127.0.0.1", echo_port)
+            server = ShadowSocksServer(host="127.0.0.1", port=client_port)
+            await server.start()
+            self.assertTrue(server.is_running)
+            try:
+                reader, writer = await asyncio.open_connection("127.0.0.1", client_port)
+                cfg = CIPHER_CONFIGS[cipher_name]
+                client_salt = os.urandom(cfg["salt_size"])
+                client_subkey = derive_subkey(evp_bytes_to_key(password, cfg["key_size"]), client_salt, cfg["key_size"])
+                client_cipher = AEADCipherState(cipher_name, client_subkey)
+
+                writer.write(client_salt)
+                await writer.drain()
+
+                payload = b"\x01\x7f\x00\x00\x01" + struct.pack("!H", echo_port) + b"PING-" + cipher_name.encode()
+                writer.write(client_cipher.encrypt(struct.pack("!H", len(payload))))
+                writer.write(client_cipher.encrypt(payload))
+                await writer.drain()
+
+                server_salt = await asyncio.wait_for(reader.readexactly(cfg["salt_size"]), timeout=5)
+                self.assertEqual(len(server_salt), cfg["salt_size"])
+                server_subkey = derive_subkey(evp_bytes_to_key(password, cfg["key_size"]), server_salt, cfg["key_size"])
+                server_cipher = AEADCipherState(cipher_name, server_subkey)
+
+                enc_len = await asyncio.wait_for(reader.readexactly(2 + cfg["tag_size"]), timeout=5)
+                chunk_len = struct.unpack("!H", server_cipher.decrypt(enc_len))[0]
+                enc_body = await asyncio.wait_for(reader.readexactly(chunk_len + cfg["tag_size"]), timeout=5)
+                self.assertEqual(server_cipher.decrypt(enc_body), b"PING-" + cipher_name.encode())
+
+                writer.close()
+                try:
+                    await writer.wait_closed()
+                except Exception:
+                    pass
+            finally:
+                await server.stop()
+                echo_srv.close()
+
+        async def _all():
+            await _run("chacha20-ietf-poly1305", 18391, 19091, "e2e_chacha_pwd", "chacha20-ietf-poly1305")
+            await _run("aes-128-gcm", 18392, 19092, "e2e_aesgcm_pwd", "aes-128-gcm")
+
+        asyncio.run(_all())
+
 if __name__ == "__main__":
     unittest.main()

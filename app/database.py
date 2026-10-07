@@ -7,44 +7,80 @@ from app.config import settings
 
 logger = logging.getLogger("miliconfig.database")
 
+# Railway mounts persistent volumes at /data; prefer it over the ephemeral container
+# filesystem so user/node/traffic data survives redeploys.
+PERSISTENT_DATA_DIR = os.environ.get("DATA_DIR", "/data")
+
+_unsupported_db_url_warned = False
+
+
+def _sqlite_path_from_url(db_url: str) -> Optional[str]:
+    """Extract the filesystem path from a sqlite:// DATABASE_URL (None when absent)."""
+    url = (db_url or "").strip()
+    if not url.lower().startswith("sqlite"):
+        return None
+    raw = url[len("sqlite://"):]
+    if raw.startswith("//"):
+        # sqlite:////data/miliconfig.db -> absolute path
+        return os.path.abspath(raw[1:])
+    if raw.startswith("/"):
+        # sqlite:///./miliconfig.db -> relative path (SQLAlchemy convention)
+        return os.path.abspath(raw.lstrip("/") or "miliconfig.db")
+    return os.path.abspath(raw) if raw else None
+
+
+def _is_writable_db_target(path: str) -> bool:
+    """Probe that a SQLite file can be created/opened without creating junk databases."""
+    try:
+        parent = os.path.dirname(path)
+        if parent and not os.path.isdir(parent):
+            os.makedirs(parent, exist_ok=True)
+        existed = os.path.exists(path)
+        with open(path, "ab"):
+            pass
+        if not existed:
+            os.remove(path)
+        return True
+    except Exception as e:
+        logger.warning(f"Database path candidate {path} not writable: {e}")
+        return False
+
+
 def get_writable_db_path() -> str:
-    """Find the best writable database path with fallback to /tmp."""
-    candidates = []
-    
-    # 1. Path from DATABASE_URL if sqlite
-    db_url = settings.DATABASE_URL or ""
-    if db_url.startswith("sqlite:///"):
-        p = db_url.replace("sqlite:///", "")
-        candidates.append(os.path.abspath(p))
-    
-    # 2. Local directory
+    """Find the best writable database path with a persistent-volume preference."""
+    global _unsupported_db_url_warned
+
+    # Only an operator-provided DATABASE_URL overrides the storage location; the
+    # built-in default must not shadow a mounted persistent volume.
+    explicit_url = (os.environ.get("DATABASE_URL") or "").strip()
+    db_url = explicit_url or (settings.DATABASE_URL or "").strip()
+    candidates: List[str] = []
+
+    explicit_sqlite = _sqlite_path_from_url(explicit_url)
+    if explicit_sqlite:
+        candidates.append(explicit_sqlite)
+    elif explicit_url and not _unsupported_db_url_warned:
+        # The engine is a purpose-built SQLite implementation; a PostgreSQL URL cannot
+        # be honoured. Fail loudly in the logs instead of silently losing persistence.
+        _unsupported_db_url_warned = True
+        scheme = db_url.split(":", 1)[0]
+        logger.warning(
+            "DATABASE_URL scheme '%s' is not supported by the embedded SQLite engine. "
+            "Falling back to an SQLite file - mount a Railway Volume at %s to persist data.",
+            scheme, PERSISTENT_DATA_DIR,
+        )
+
+    if os.path.isdir(PERSISTENT_DATA_DIR):
+        candidates.append(os.path.join(PERSISTENT_DATA_DIR, "miliconfig.db"))
+
     candidates.append(os.path.abspath("miliconfig.db"))
-    
-    # 3. Data directory
-    candidates.append(os.path.abspath("/data/miliconfig.db"))
     candidates.append(os.path.abspath("/home/miliconfig/data/miliconfig.db"))
-    
-    # 4. Temp directory (always writable in Linux/Docker)
     candidates.append(os.path.abspath("/tmp/miliconfig.db"))
 
     for path in candidates:
-        try:
-            parent = os.path.dirname(path)
-            if parent and not os.path.exists(parent):
-                try:
-                    os.makedirs(parent, exist_ok=True)
-                except Exception:
-                    continue
-            test_conn = sqlite3.connect(path, timeout=3.0)
-            test_conn.execute("PRAGMA journal_mode = DELETE;")
-            test_conn.execute("CREATE TABLE IF NOT EXISTS _health_check (id INT);")
-            test_conn.commit()
-            test_conn.close()
+        if _is_writable_db_target(path):
             logger.info(f"Using SQLite database at: {path}")
             return path
-        except Exception as e:
-            logger.warning(f"Database path candidate {path} not writable: {e}")
-            continue
 
     return "/tmp/miliconfig.db"
 
@@ -68,8 +104,8 @@ class Database:
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA journal_mode = DELETE;")
             conn.execute("PRAGMA busy_timeout = 10000;")
+            conn.execute("PRAGMA foreign_keys = ON;")
             return conn
-
     def init_schema(self):
         try:
             conn = self.get_connection()
