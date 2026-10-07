@@ -27,6 +27,7 @@ test_files = [
     "test_proxyip.py",
     "test_access.py",
     "test_railway.py",
+    "test_unblocked.py",
     "test_migration.py"
 ]
 

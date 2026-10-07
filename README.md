@@ -147,6 +147,53 @@ Railway only publishes the container through its HTTPS edge, so the ShadowSocks 
 
 ---
 
+---
+
+## Access without a VPN (Iran / SNI filtering)
+
+Iranian ISPs filter `*.up.railway.app` by TLS SNI, which makes the panel unreachable
+and leaves every generated config dead until a VPN is enabled. MILICONFIG routes all
+client-facing traffic through a domain you choose, so none of this is required once a
+non-filtered domain is configured.
+
+### Option A — Your own domain on Railway (simplest)
+
+1. In Railway: **Settings → Networking → Custom Domain** and add e.g. `panel.mydomain.com`
+   (point its CNAME at the Railway target shown there).
+2. Open the panel (even via a VPN) → **System Settings → Public Base URL** and set
+   `https://panel.mydomain.com` (or set the `PUBLIC_BASE_URL` env variable).
+3. Save. The panel, subscription links and **every generated config** now use that domain
+   instead of the filtered request host — no VPN needed for the panel, and the configs
+   connect from Iran directly.
+
+### Option B — Cloudflare gateway + clean IPs (when IPs are filtered too)
+
+Use this when the domain itself resolves to IPs your ISP blocks.
+
+1. Deploy the gateway worker: `npx wrangler deploy` (uses the bundled `wrangler.toml`;
+   set `BACKEND_HOST` / `BACKEND_URL` to your Railway origin) or paste `_worker.js` into a
+   new Cloudflare Worker. It proxies HTTP **and VLESS/Trojan WebSockets** to Railway.
+2. Attach a custom domain to the Worker (Cloudflare proxies it) and use that domain for the
+   panel. If the Worker domain is filtered by IP but Cloudflare's edge is reachable, add
+   **Clean IPs** next:
+3. **System Settings**:
+   - *Public Base URL*: the gateway domain, e.g. `https://panel.mydomain.com`
+   - *Gateway Domain*: the same gateway domain (used as SNI/Host)
+   - *Clean IPs*: comma separated Cloudflare/edge IPs that respond on your ISP, e.g.
+     `104.16.132.229,104.17.147.22` (leave empty to reuse the **ProxyIP** pool entries,
+     which already carry latency/health data).
+4. Each configured clean IP produces an extra pair of nodes named
+   `… • IP 104.16.132.229`: the address is the raw IP while **SNI/Host stays your gateway
+   domain**, which is the standard way to reach a filtered front domain from Iran.
+
+> Notes
+> - `PUBLIC_BASE_URL` (env) and `GATEWAY_DOMAIN` (env) mirror the panel settings, so the
+>   whole setup can also be configured without opening the panel.
+> - Only settings you actually fill in change the output; with nothing configured the
+>   behaviour stays exactly as before (the request host is used).
+> - Cloudflare's free `*.workers.dev` / `*.pages.dev` hostnames are also commonly filtered,
+>   so a custom domain attached to the Worker is strongly recommended.
+
 ## Environment Variables
 
 | Variable | Description | Default |
@@ -158,7 +205,9 @@ Railway only publishes the container through its HTTPS edge, so the ShadowSocks 
 | `JWT_SECRET` | Admin session JWT signature key | Random hex string |
 | `ADMIN_USERNAME` | Superadmin username | `admin` |
 | `ADMIN_PASSWORD` | Superadmin password | `miliconfig_admin_2026` |
-| `PUBLIC_BASE_URL` | Public HTTPS URL for subscription generation | `http://localhost:8000` |
+| `PUBLIC_BASE_URL` | Domain written into every generated config (use your non-filtered domain) | falls back to the request host |
+| `GATEWAY_DOMAIN` | Front domain used as SNI/Host for clean-IP nodes (also a panel setting) | unset |
+| `GATEWAY_CLEAN_IPS` | Comma separated clean IPs (`clean_ips` setting); falls back to the ProxyIP pool | unset |
 | `DEFAULT_DOMAIN` | Fallback SNI/Host domain | `localhost` |
 | `ENABLE_SHADOWSOCKS` | Enable background ShadowSocks server | `true` |
 | `SS_PORT` | ShadowSocks TCP listening port (falls back to `RAILWAY_TCP_APPLICATION_PORT`) | `8388` |
@@ -240,6 +289,15 @@ Test suite coverage:
 - `test_routing.py`: Rule-based outbound routing (domain, CIDR, port).
 - `test_proxyip.py`: ProxyIP pool management and health tracking.
 - `test_migration.py`: Automated cfnew KV configuration migration.
+- `test_railway.py`: Railway env parsing (`PORT`, `RAILWAY_TCP_*`), LOG_LEVEL safety, persistence paths.
+- `test_access.py`: Entitlement enforcement (status, expiry, traffic quota) and ShadowSocks publishing rules.
+- `test_unblocked.py`: Public-domain override, gateway domain and clean-IP config generation.
+
+The Cloudflare gateway worker is verified separately against a local origin (Node provides the
+same `Request`/`Response`/`fetch` globals as Workers):
+```bash
+node --test scripts/test_gateway_worker.mjs
+```
 
 ---
 

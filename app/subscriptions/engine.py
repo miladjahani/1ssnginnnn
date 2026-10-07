@@ -1,4 +1,5 @@
 import json
+import os
 import base64
 import yaml
 import urllib.parse
@@ -18,6 +19,111 @@ class SubscriptionEngine:
         if raw.lower().startswith("miliconfig"):
             return raw
         return f"miliconfig-{index:02d} • {region} ({protocol})"
+
+    # ---------------- UNBLOCKED PUBLIC ROUTING ----------------
+    @staticmethod
+    def hostname_of(value: Optional[str]) -> str:
+        """Extract a bare hostname from a URL, domain or host:port value."""
+        raw = (value or "").strip()
+        if not raw:
+            return ""
+        if "//" not in raw:
+            raw = "//" + raw
+        try:
+            parsed = urllib.parse.urlsplit(raw)
+            return (parsed.hostname or "").strip()
+        except Exception:
+            return ""
+
+    def resolve_public_host(self, request_host: Optional[str] = None) -> str:
+        """
+        Decide which domain the generated client configurations must point at.
+
+        Iranian ISPs block `*.up.railway.app` (TLS SNI filtering), so an explicitly
+        configured public domain always wins over the host of the incoming request.
+        Priority: panel setting -> PUBLIC_BASE_URL env -> request host -> DEFAULT_DOMAIN.
+        """
+        configured = self.hostname_of(repo.get_setting("public_base_url", ""))
+        if configured:
+            return configured
+        env_host = self.hostname_of(os.environ.get("PUBLIC_BASE_URL", ""))
+        if env_host and env_host.lower() not in ("localhost", "127.0.0.1"):
+            return env_host
+        req = (request_host or "").split(":")[0].strip()
+        return req or settings.DEFAULT_DOMAIN
+
+    def gateway_domain(self) -> str:
+        """
+        Front domain (custom domain or Cloudflare gateway) used as SNI/Host for the
+        clean-IP mirror nodes. Explicit opt-in: without it only the public domain
+        nodes are generated.
+        """
+        configured = self.hostname_of(repo.get_setting("gateway_domain", ""))
+        if configured:
+            return configured
+        return self.hostname_of(os.environ.get("GATEWAY_DOMAIN", ""))
+
+    def clean_ip_endpoints(self, limit: int = 2) -> List[str]:
+        """
+        Preferred ("clean") edge IPs used when the front domain's own IPs are filtered.
+
+        Admin-managed ProxyIP pool entries are reused (they already carry health and
+        latency data), with an explicit `clean_ips` setting taking priority.
+        """
+        configured = repo.get_setting("clean_ips", "") or os.environ.get("GATEWAY_CLEAN_IPS", "")
+        raw_ips = [ip.strip() for ip in (configured or "").split(",") if ip.strip()]
+        if not raw_ips:
+            raw_ips = [p.address.strip() for p in repo.list_proxy_ips(active_only=True) if p.address]
+        seen: List[str] = []
+        for ip in raw_ips:
+            if ip and ip not in seen:
+                seen.append(ip)
+        return seen[:limit]
+
+    def build_gateway_nodes(self, nodes: List[Node]) -> List[Node]:
+        """
+        Build in-memory mirror nodes that reach the service through a clean IP while
+        keeping the gateway domain as TLS SNI/Host (the standard anti-filter pattern).
+
+        Returns an empty list unless a gateway domain and at least one clean IP exist.
+        """
+        domain = self.gateway_domain()
+        if not domain:
+            return []
+        ips = self.clean_ip_endpoints()
+        if not ips:
+            return []
+
+        templates: Dict[str, Node] = {}
+        for node in nodes:
+            proto = (node.protocol or "vless").lower()
+            if proto not in templates:
+                templates[proto] = node
+        if not templates:
+            return []
+
+        variants: List[Node] = []
+        for ip in ips:
+            for proto, node in templates.items():
+                variants.append(Node(
+                    id=None,
+                    name=f"{node.name} • IP {ip}",
+                    protocol=node.protocol,
+                    address=ip,
+                    port=443,
+                    uuid=node.uuid,
+                    password=node.password,
+                    path=node.path,
+                    host=domain,
+                    sni=domain,
+                    alpn=node.alpn,
+                    network=node.network,
+                    tls=True,
+                    proxyip=node.proxyip,
+                    region=node.region,
+                    enabled=True,
+                ))
+        return variants
 
     def resolve_effective_address_and_port(self, node: Node, request_host: Optional[str] = None) -> Tuple[str, int, bool]:
         """
@@ -377,19 +483,24 @@ class SubscriptionEngine:
         if access_error:
             return 403, f"Subscription unavailable: {access_error}", "text/plain; charset=utf-8"
 
+        # Resolve the client-facing domain once: a configured unblocked domain must
+        # replace the (possibly filtered) host the panel was opened with.
+        public_host = self.resolve_public_host(request_host)
+
         nodes = repo.list_nodes(enabled_only=True)
+        nodes = nodes + self.build_gateway_nodes(nodes)
         ss_cred = repo.get_ss_by_user_id(user.id)
 
         target_format = self.detect_client_format(user_agent, target_param)
 
         if target_format == "clash":
-            content = self.generate_clash_yaml(user, nodes, ss_cred, request_host)
+            content = self.generate_clash_yaml(user, nodes, ss_cred, public_host)
             return 200, content, "text/yaml; charset=utf-8"
         elif target_format == "singbox":
-            content = self.generate_singbox_json(user, nodes, ss_cred, request_host)
+            content = self.generate_singbox_json(user, nodes, ss_cred, public_host)
             return 200, content, "application/json; charset=utf-8"
         else:
-            content = self.generate_base64_subscription(user, nodes, ss_cred, request_host)
+            content = self.generate_base64_subscription(user, nodes, ss_cred, public_host)
             return 200, content, "text/plain; charset=utf-8"
 
 subscription_engine = SubscriptionEngine()

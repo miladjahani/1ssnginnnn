@@ -1,0 +1,9 @@
+# Deploy the MILICONFIG unblocked gateway with:  npx wrangler deploy
+# Then attach a custom domain (Workers -> Settings -> Domains & Routes) and use that
+# domain both for the panel and as "Gateway Domain" in the MILICONFIG panel settings.
+name = "miliconfig-gateway"
+main = "_worker.js"
+compatibility_date = "2026-01-20"
+
+[vars]
+BACKEND_HOST = "milinewc2-production.up.railway.app"

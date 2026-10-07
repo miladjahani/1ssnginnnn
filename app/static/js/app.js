@@ -320,10 +320,24 @@ async function loadSubscriptions() {
   }
 }
 
+// Public base URL configured in System Settings (used for subscription links/links in configs)
+let publicBaseUrl = "";
+
+async function loadPublicBaseUrl() {
+  try {
+    const res = await fetch("/api/admin/settings");
+    if (!res.ok) return;
+    const settings = await res.json();
+    publicBaseUrl = (settings.public_base_url || "").trim().replace(/\/+$/, "");
+  } catch (e) {
+    console.error("Settings preload error:", e);
+  }
+}
+
 function updateSubPreview() {
   const token = document.getElementById("sub-preview-user-select").value;
   if (!token) return;
-  const baseUrl = window.location.origin;
+  const baseUrl = publicBaseUrl || window.location.origin;
   const subUrl = `${baseUrl}/sub/${token}`;
   document.getElementById("sub-url-input").value = subUrl;
   document.getElementById("btn-open-clash").href = `${subUrl}?target=clash`;
@@ -567,6 +581,9 @@ async function loadSettings() {
     const res = await fetch("/api/admin/settings");
     const settings = await res.json();
     if (settings.public_base_url) document.getElementById("setting-public_base_url").value = settings.public_base_url;
+    publicBaseUrl = (settings.public_base_url || "").trim().replace(/\/+$/, "");
+    if (settings.gateway_domain) document.getElementById("setting-gateway_domain").value = settings.gateway_domain;
+    if (settings.clean_ips) document.getElementById("setting-clean_ips").value = settings.clean_ips;
     if (settings.default_domain) document.getElementById("setting-default_domain").value = settings.default_domain;
     if (settings.outbound_mode) document.getElementById("setting-outbound_mode").value = settings.outbound_mode;
     if (settings.outbound_proxy) document.getElementById("setting-outbound_proxy").value = settings.outbound_proxy;
@@ -580,7 +597,9 @@ async function loadSettings() {
 async function saveSettings(e) {
   e.preventDefault();
   const payload = {
-    public_base_url: document.getElementById("setting-public_base_url").value,
+    public_base_url: document.getElementById("setting-public_base_url").value.trim(),
+    gateway_domain: document.getElementById("setting-gateway_domain").value.trim(),
+    clean_ips: document.getElementById("setting-clean_ips").value.trim(),
     default_domain: document.getElementById("setting-default_domain").value,
     outbound_mode: document.getElementById("setting-outbound_mode").value,
     outbound_proxy: document.getElementById("setting-outbound_proxy").value,
@@ -594,6 +613,8 @@ async function saveSettings(e) {
       body: JSON.stringify(payload)
     });
     if (res.ok) {
+      publicBaseUrl = document.getElementById("setting-public_base_url").value.trim().replace(/\/+$/, "");
+      if (document.getElementById("sub-preview-user-select").value) updateSubPreview();
       showToast("System settings updated successfully");
     }
   } catch (e) {
@@ -602,4 +623,4 @@ async function saveSettings(e) {
 }
 
 // Initial load
-loadDashboard();
+loadPublicBaseUrl().then(loadDashboard);
