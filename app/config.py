@@ -27,20 +27,31 @@ class Settings:
     DEFAULT_PATH: str = os.environ.get("DEFAULT_PATH", "/")
     DNS_SERVERS: str = os.environ.get("DNS_SERVERS", "1.1.1.1,8.8.8.8,https://223.5.5.5/dns-query")
 
-    # ShadowSocks listener. RAILWAY_TCP_APPLICATION_PORT is injected by Railway when a
-    # TCP proxy is enabled, so the engine binds to the port that is actually reachable.
-    SS_PORT: int = _env_int("SS_PORT", _env_int("RAILWAY_TCP_APPLICATION_PORT", 8388))
+    # Railway TCP proxy (raw TCP ingress). It targets exactly one container port; the
+    # HTTP/WS ingress or the ShadowSocks listener - see the properties below.
+    RAILWAY_TCP_APPLICATION_PORT: int = _env_int("RAILWAY_TCP_APPLICATION_PORT", 0)
+    RAILWAY_TCP_PROXY_DOMAIN: str = (os.environ.get("RAILWAY_TCP_PROXY_DOMAIN") or "").strip()
+    RAILWAY_TCP_PROXY_PORT: int = _env_int("RAILWAY_TCP_PROXY_PORT", 0)
+
+    # Explicit overrides (also usable outside Railway).
+    TCP_PROXY_HOST: str = (os.environ.get("TCP_PROXY_HOST") or "").strip()
+    TCP_PROXY_PORT: int = _env_int("TCP_PROXY_PORT", 0)
+
+    # ShadowSocks listener. It must never share the HTTP port, so the Railway TCP proxy
+    # application port is only used when it is not the web port.
+    SS_PORT: int = _env_int("SS_PORT", 0) or (
+        RAILWAY_TCP_APPLICATION_PORT
+        if RAILWAY_TCP_APPLICATION_PORT and RAILWAY_TCP_APPLICATION_PORT != PORT
+        else 8388
+    )
     SS_BIND_HOST: str = os.environ.get("SS_BIND_HOST", "0.0.0.0")
     SS_DEFAULT_METHOD: str = os.environ.get("SS_DEFAULT_METHOD", "chacha20-ietf-poly1305")
     SS_DEFAULT_PASSWORD: str = os.environ.get("SS_DEFAULT_PASSWORD", "miliconfig_ss_pass_2026")
 
-    # Public (client-facing) ShadowSocks endpoint. Railway only exposes the container
-    # through the HTTP edge unless a TCP proxy is added; these variables let the
-    # subscription engine advertise the real public host/port instead of a dead port.
-    SS_PUBLIC_HOST: str = (
-        os.environ.get("SS_PUBLIC_HOST") or os.environ.get("RAILWAY_TCP_PROXY_DOMAIN") or ""
-    ).strip()
-    SS_PUBLIC_PORT: int = _env_int("SS_PUBLIC_PORT", _env_int("RAILWAY_TCP_PROXY_PORT", 0))
+    # Public (client-facing) ShadowSocks endpoint. Only advertised when it is actually
+    # reachable, i.e. explicitly configured or served by the TCP proxy.
+    SS_PUBLIC_HOST: str = (os.environ.get("SS_PUBLIC_HOST") or "").strip()
+    SS_PUBLIC_PORT: int = _env_int("SS_PUBLIC_PORT", 0)
 
     # Protocol toggles
     ENABLE_VLESS: bool = os.environ.get("ENABLE_VLESS", "true").lower() in ("true", "1", "yes")
@@ -62,11 +73,48 @@ class Settings:
         return any(k.startswith("RAILWAY_") for k in os.environ)
 
     @property
+    def tcp_proxy_targets_http(self) -> bool:
+        """True when the TCP proxy forwards raw TCP to the HTTP/WebSocket port."""
+        if self.TCP_PROXY_HOST:
+            return True
+        if self.RAILWAY_TCP_APPLICATION_PORT:
+            return self.RAILWAY_TCP_APPLICATION_PORT == self.PORT
+        # Railway did not report the target port: assume the web port, which is what
+        # keeps the panel and proxy WebSockets reachable without a TLS domain.
+        return bool(self.RAILWAY_TCP_PROXY_DOMAIN)
+
+    @property
+    def tcp_proxy_targets_ss(self) -> bool:
+        """True when the TCP proxy forwards raw TCP to the ShadowSocks listener."""
+        return bool(self.RAILWAY_TCP_APPLICATION_PORT) and (
+            self.RAILWAY_TCP_APPLICATION_PORT == self.SS_PORT
+        )
+
+    @property
+    def http_tcp_proxy_endpoint(self):
+        """
+        Public plain-TCP endpoint carrying the panel and the proxy WebSocket paths.
+
+        Needed when the `*.up.railway.app` HTTPS hostname is filtered by SNI: plain
+        WebSocket has no SNI to block.
+        """
+        host = self.TCP_PROXY_HOST
+        port = self.TCP_PROXY_PORT
+        if not (host and port) and self.tcp_proxy_targets_http:
+            host = host or self.RAILWAY_TCP_PROXY_DOMAIN
+            port = port or self.RAILWAY_TCP_PROXY_PORT
+        return (host, port) if host and port else (None, None)
+
+    @property
     def ss_public_endpoint(self):
-        """Explicit public ShadowSocks host/port, if configured."""
-        host = self.SS_PUBLIC_HOST
-        port = self.SS_PUBLIC_PORT or self.SS_PORT
-        return (host, port) if host else (None, None)
+        """Public ShadowSocks host/port, only when it is genuinely reachable."""
+        if self.SS_PUBLIC_HOST and self.SS_PUBLIC_PORT:
+            return (self.SS_PUBLIC_HOST, self.SS_PUBLIC_PORT)
+        if self.tcp_proxy_targets_ss and self.RAILWAY_TCP_PROXY_DOMAIN and self.RAILWAY_TCP_PROXY_PORT:
+            return (self.RAILWAY_TCP_PROXY_DOMAIN, self.RAILWAY_TCP_PROXY_PORT)
+        if self.SS_PUBLIC_HOST:
+            return (self.SS_PUBLIC_HOST, self.SS_PORT)
+        return (None, None)
 
 
 settings = Settings()

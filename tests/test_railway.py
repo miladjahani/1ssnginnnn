@@ -19,12 +19,14 @@ print(json.dumps({
     "ss_public_endpoint": list(settings.ss_public_endpoint),
     "db_path": get_writable_db_path(),
     "running_on_railway": bool(settings.running_on_railway),
+    "http_tcp_proxy": [settings.http_tcp_proxy_endpoint[0] or "", settings.http_tcp_proxy_endpoint[1] or 0],
+    "ss_public_endpoint": [settings.ss_public_endpoint[0] or "", settings.ss_public_endpoint[1] or 0],
 }))
 """
 
 
 def inspect(env_overrides):
-    env = {k: v for k, v in os.environ.items() if not k.startswith(("PORT", "SS_", "DATABASE_URL", "DATA_DIR", "RAILWAY_"))}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(("PORT", "SS_", "TCP_PROXY", "DATABASE_URL", "DATA_DIR", "RAILWAY_"))}
     env.update(env_overrides)
     proc = subprocess.run(
         [sys.executable, "-c", INSPECT_SNIPPET],
@@ -95,3 +97,41 @@ class TestLogLevelHandling(unittest.TestCase):
             )
             self.assertEqual(proc.returncode, 0, f"LOG_LEVEL={value!r} crashed:\n{proc.stderr}")
             self.assertIn("IMPORT_OK", proc.stdout)
+
+
+class TestRailwayTcpProxyTopology(unittest.TestCase):
+    """Railway's raw TCP ingress serves either the web port or ShadowSocks - never both."""
+
+    def test_proxy_targeting_web_port_seeds_plain_nodes_and_hides_shadowsocks(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            info = inspect({
+                "PORT": "8080",
+                "RAILWAY_TCP_APPLICATION_PORT": "8080",
+                "RAILWAY_TCP_PROXY_DOMAIN": "roundhouse.proxy.rlwy.net",
+                "RAILWAY_TCP_PROXY_PORT": "29461",
+                "DATA_DIR": data_dir,
+            })
+            self.assertEqual(info["http_tcp_proxy"], ["roundhouse.proxy.rlwy.net", 29461])
+            self.assertEqual(info["ss_public_endpoint"], ["", 0])
+            self.assertEqual(info["ss_port"], 8388, "SS must not try to bind the web port")
+
+    def test_proxy_targeting_shadowsocks_publishes_ss(self):
+        with tempfile.TemporaryDirectory() as data_dir:
+            info = inspect({
+                "PORT": "8080",
+                "SS_PORT": "8388",
+                "RAILWAY_TCP_APPLICATION_PORT": "8388",
+                "RAILWAY_TCP_PROXY_DOMAIN": "roundhouse.proxy.rlwy.net",
+                "RAILWAY_TCP_PROXY_PORT": "29461",
+                "DATA_DIR": data_dir,
+            })
+            self.assertEqual(info["http_tcp_proxy"], ["", 0])
+            self.assertEqual(info["ss_public_endpoint"], ["roundhouse.proxy.rlwy.net", 29461])
+
+    def test_explicit_tcp_proxy_variables_work_off_railway(self):
+        info = inspect({
+            "PORT": "8000",
+            "TCP_PROXY_HOST": "my-vps.example.org",
+            "TCP_PROXY_PORT": "9443",
+        })
+        self.assertEqual(info["http_tcp_proxy"], ["my-vps.example.org", 9443])

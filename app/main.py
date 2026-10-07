@@ -16,6 +16,7 @@ from app.transports.websocket.handler import handle_websocket_connection
 from app.transports.xhttp.handler import handle_xhttp_request
 from app.protocols.shadowsocks.server import ss_server
 from app.networking.dns import dns_resolver
+from app.services.bootstrap import seed_railway_tcp_proxy_nodes
 
 _log_level = getattr(logging, str(settings.LOG_LEVEL or "INFO").strip().upper(), logging.INFO)
 if not isinstance(_log_level, int):
@@ -157,6 +158,13 @@ async def on_startup():
                 region="Railway-Trojan"
             )
 
+        # Seed no-TLS WebSocket nodes when Railway exposes a raw TCP proxy, so clients
+        # keep working even though the HTTPS hostname is filtered by SNI.
+        try:
+            seed_railway_tcp_proxy_nodes()
+        except Exception as e:
+            logger.warning(f"Railway TCP proxy node seeding skipped: {e}")
+
         # Seed default proxy IPs if none exist
         existing_pips = repo.list_proxy_ips()
         if not existing_pips:
@@ -178,12 +186,18 @@ async def on_startup():
     except Exception as e:
         logger.error(f"Startup initialization error (non-fatal): {e}", exc_info=True)
 
-    # Start ShadowSocks server
+    # Start ShadowSocks server (never on the HTTP port)
     if settings.ENABLE_SHADOWSOCKS:
-        try:
-            asyncio.create_task(ss_server.start())
-        except Exception as e:
-            logger.warning(f"ShadowSocks background listener initialization: {e}")
+        if int(settings.SS_PORT) == int(settings.PORT):
+            logger.warning(
+                "ShadowSocks listener disabled: SS_PORT (%s) equals the web PORT; "
+                "configure a distinct SS_PORT.", settings.SS_PORT,
+            )
+        else:
+            try:
+                asyncio.create_task(ss_server.start())
+            except Exception as e:
+                logger.warning(f"ShadowSocks background listener initialization: {e}")
 
 @app.on_event("shutdown")
 async def on_shutdown():

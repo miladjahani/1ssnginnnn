@@ -190,17 +190,23 @@ class SubscriptionEngine:
         addr, port, tls = self.resolve_effective_address_and_port(node, request_host)
         domain = self.resolve_domain(node, request_host)
         name = self.format_client_node_name(node.name, index, node.region, "VLESS")
-        security = "tls" if tls else "none"
-        alpn_param = f"&alpn={node.alpn}" if node.alpn else "&alpn=h2,http/1.1"
         path = node.path or "/?ed=2048"
         if not path.startswith("/"):
             path = "/" + path
         path_encoded = urllib.parse.quote(path)
 
-        query_params = (
-            f"type={node.network}&security={security}&encryption=none"
-            f"&host={domain}&sni={domain}&path={path_encoded}{alpn_param}&fp=chrome"
-        )
+        if tls:
+            alpn_param = f"&alpn={node.alpn}" if node.alpn else "&alpn=h2,http/1.1"
+            query_params = (
+                f"type={node.network}&security=tls&encryption=none"
+                f"&host={domain}&sni={domain}&path={path_encoded}{alpn_param}&fp=chrome"
+            )
+        else:
+            # Plain transport (e.g. Railway TCP proxy): no SNI, ALPN or TLS fingerprint.
+            query_params = (
+                f"type={node.network}&security=none&encryption=none"
+                f"&host={domain}&path={path_encoded}"
+            )
         tag = urllib.parse.quote(name)
         return f"vless://{user.uuid}@{addr}:{port}?{query_params}#{tag}"
 
@@ -208,17 +214,21 @@ class SubscriptionEngine:
         addr, port, tls = self.resolve_effective_address_and_port(node, request_host)
         domain = self.resolve_domain(node, request_host)
         name = self.format_client_node_name(node.name, index, node.region, "Trojan")
-        security = "tls" if tls else "none"
-        alpn_param = f"&alpn={node.alpn}" if node.alpn else "&alpn=h2,http/1.1"
         path = node.path or "/?ed=2048"
         if not path.startswith("/"):
             path = "/" + path
         path_encoded = urllib.parse.quote(path)
 
-        query_params = (
-            f"type={node.network}&security={security}"
-            f"&host={domain}&sni={domain}&path={path_encoded}{alpn_param}&fp=chrome"
-        )
+        if tls:
+            alpn_param = f"&alpn={node.alpn}" if node.alpn else "&alpn=h2,http/1.1"
+            query_params = (
+                f"type={node.network}&security=tls"
+                f"&host={domain}&sni={domain}&path={path_encoded}{alpn_param}&fp=chrome"
+            )
+        else:
+            query_params = (
+                f"type={node.network}&security=none&host={domain}&path={path_encoded}"
+            )
         tag = urllib.parse.quote(name)
         password = node.password or user.uuid
         return f"trojan://{password}@{addr}:{port}?{query_params}#{tag}"
@@ -266,10 +276,10 @@ class SubscriptionEngine:
                 "password": (node.password or user.uuid) if node.protocol.lower() == "trojan" else None,
                 "network": node.network,
                 "tls": tls,
-                "udp": True,
-                "client-fingerprint": "chrome"
+                "udp": True
             }
             if tls:
+                p_dict["client-fingerprint"] = "chrome"
                 p_dict["servername"] = domain
                 p_dict["skip-cert-verify"] = False
                 alpn_val = node.alpn or "h2,http/1.1"

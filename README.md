@@ -186,6 +186,38 @@ Use this when the domain itself resolves to IPs your ISP blocks.
    `… • IP 104.16.132.229`: the address is the raw IP while **SNI/Host stays your gateway
    domain**, which is the standard way to reach a filtered front domain from Iran.
 
+### Option C — Railway TCP proxy (no domain needed at all)
+
+Railway can expose the container through a raw TCP proxy; that ingress carries **plain HTTP and
+plain WebSocket**, so there is no TLS SNI for an ISP to filter:
+
+1. Railway → your service → **Settings → Networking → TCP Proxy**: enable it and set the target
+   port to the port the app listens on (`PORT`, i.e. the HTTP/WebSocket port). Railway shows a
+   public address such as `roundhouse.proxy.rlwy.net:29461`.
+2. Open the panel directly: `http://roundhouse.proxy.rlwy.net:29461/` — the login page works
+   without a VPN (only DNS/IP based filtering can still interfere).
+3. On startup MILICONFIG detects the TCP proxy and automatically seeds two **plain (no-TLS)
+   WebSocket nodes** (`miliconfig • 🔓 … Railway TCP Proxy`) using that host/port. Subscription
+   output for them uses `security=none` and `ws://`, so clients reach the proxy without any TLS
+   SNI — panel *and* configs work with no domain.
+4. Optional: set **Public Base URL** to `http://roundhouse.proxy.rlwy.net:29461` so the links
+   shown in the panel point at the unblocked address too.
+
+Notes
+- Railway's raw ingress serves exactly one container port. When it targets the web port, the
+  ShadowSocks node is deliberately left out of subscriptions (that port is not reachable);
+  when it targets `SS_PORT`, the plain WebSocket nodes are skipped and `ss://` is published
+  instead. Override the detection with `TCP_PROXY_HOST` / `TCP_PROXY_PORT`.
+- Enable the plain-WS nodes only if you accept unencrypted transport: some ISPs deep-inspect
+  plain WebSocket traffic, in which case use Option A/B for TLS.
+
+### No domain yet? Free options
+
+Attaching a domain is usually the cleanest fix. Free subdomain providers that let you create a
+CNAME to the Railway custom-domain target: **DigitalPlat FreeDomain** (`dpdns.org`, `us.kg`),
+**eu.org**, and **is-a.dev** (via a GitHub pull request). Once the CNAME resolves, use it in
+Option A (or as the Cloudflare zone for Option B).
+
 > Notes
 > - `PUBLIC_BASE_URL` (env) and `GATEWAY_DOMAIN` (env) mirror the panel settings, so the
 >   whole setup can also be configured without opening the panel.
@@ -208,6 +240,7 @@ Use this when the domain itself resolves to IPs your ISP blocks.
 | `PUBLIC_BASE_URL` | Domain written into every generated config (use your non-filtered domain) | falls back to the request host |
 | `GATEWAY_DOMAIN` | Front domain used as SNI/Host for clean-IP nodes (also a panel setting) | unset |
 | `GATEWAY_CLEAN_IPS` | Comma separated clean IPs (`clean_ips` setting); falls back to the ProxyIP pool | unset |
+| `TCP_PROXY_HOST` / `TCP_PROXY_PORT` | Public raw-TCP ingress that carries the panel + WebSocket paths (auto-detected from `RAILWAY_TCP_*`) | unset |
 | `DEFAULT_DOMAIN` | Fallback SNI/Host domain | `localhost` |
 | `ENABLE_SHADOWSOCKS` | Enable background ShadowSocks server | `true` |
 | `SS_PORT` | ShadowSocks TCP listening port (falls back to `RAILWAY_TCP_APPLICATION_PORT`) | `8388` |
