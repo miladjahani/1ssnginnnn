@@ -226,6 +226,53 @@ Option A (or as the Cloudflare zone for Option B).
 > - Cloudflare's free `*.workers.dev` / `*.pages.dev` hostnames are also commonly filtered,
 >   so a custom domain attached to the Worker is strongly recommended.
 
+---
+
+## Client compatibility & anti-DPI (StanNG-inspired)
+
+The generated configurations follow the defaults used by
+[`youdidking/stanngv2`](https://github.com/youdidking/stanngv2) (a widely used single-service
+VLESS panel), which are what make configs actually connect from Iran.
+
+### ALPN must match the transport
+
+| Transport | ALPN | Why |
+| :--- | :--- | :--- |
+| `ws` (WebSocket) | `http/1.1` | A WebSocket upgrade is an HTTP/1.1 handshake. Railway's edge is HTTP/2 capable: if `h2` is offered it negotiates h2 and the upgrade then fails, which shows up as every node being "unreachable". |
+| `xhttp` | `h2` | xHTTP is an HTTP/2 transport. |
+
+Override globally in **System Settings → ALPN**, or per node in the *Add Node* form (an empty
+value keeps the automatic per-transport default). Verified by `tests/test_client_params.py`.
+
+### Anti-DPI fragment
+
+**System Settings → Anti-DPI Fragment** controls the ClientHello fragmentation written into
+sing-box subscriptions, and the *Subscriptions* tab shows the same values so they can be entered
+in v2rayNG / Xray / Exclave clients:
+
+- Packets: `1-3`
+- Length: `10-20` (tunable)
+- Interval: `10-20` (tunable)
+
+### TLS fingerprint (uTLS)
+
+**System Settings → TLS Fingerprint** (default `chrome`, `randomized` is the usual choice against
+DPI) is applied to the share links (`fp=`), Clash (`client-fingerprint`) and sing-box
+(`tls.utls.fingerprint`).
+
+### Real subscription usage
+
+`/sub/<token>` now returns the live counters instead of placeholders:
+
+```
+Subscription-Userinfo: upload=<bytes>; download=<bytes>; total=<limit>; expire=<unix-ts>
+Profile-Title: base64:<panel title>
+Profile-Update-Interval: 1
+```
+
+`total=0`/`expire=0` mean unlimited / never expiring, so clients show the real quota and
+remaining days.
+
 ## Environment Variables
 
 | Variable | Description | Default |
@@ -239,6 +286,7 @@ Option A (or as the Cloudflare zone for Option B).
 | `ADMIN_PASSWORD` | Superadmin password | `miliconfig_admin_2026` |
 | `PUBLIC_BASE_URL` | Domain written into every generated config (use your non-filtered domain) | falls back to the request host |
 | `GATEWAY_DOMAIN` | Front domain used as SNI/Host for clean-IP nodes (also a panel setting) | unset |
+| `PROFILE_TITLE` | Title shown in the client subscription profile | `MILICONFIG Subscription` |
 | `GATEWAY_CLEAN_IPS` | Comma separated clean IPs (`clean_ips` setting); falls back to the ProxyIP pool | unset |
 | `TCP_PROXY_HOST` / `TCP_PROXY_PORT` | Public raw-TCP ingress that carries the panel + WebSocket paths (auto-detected from `RAILWAY_TCP_*`) | unset |
 | `DEFAULT_DOMAIN` | Fallback SNI/Host domain | `localhost` |

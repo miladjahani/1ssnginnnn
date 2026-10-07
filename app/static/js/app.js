@@ -260,12 +260,13 @@ async function submitAddNode(e) {
   const network = document.getElementById("new-node-network").value;
   const tls = document.getElementById("new-node-tls").value === "1";
   const region = document.getElementById("new-node-region").value;
+  const alpn = document.getElementById("new-node-alpn").value.trim();
 
   try {
     const res = await fetch("/api/admin/nodes", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name, protocol, address, port, network, tls, region })
+      body: JSON.stringify({ name, protocol, address, port, network, tls, region, alpn })
     });
     if (res.ok) {
       showToast("Node added successfully");
@@ -323,12 +324,20 @@ async function loadSubscriptions() {
 // Public base URL configured in System Settings (used for subscription links/links in configs)
 let publicBaseUrl = "";
 
+let miliSettings = {};
+
 async function loadPublicBaseUrl() {
   try {
     const res = await fetch("/api/admin/settings");
     if (!res.ok) return;
-    const settings = await res.json();
-    publicBaseUrl = (settings.public_base_url || "").trim().replace(/\/+$/, "");
+    miliSettings = await res.json();
+    publicBaseUrl = (miliSettings.public_base_url || "").trim().replace(/\/+$/, "");
+    const len = (miliSettings.fragment_length || "10-30").trim();
+    const ivl = (miliSettings.fragment_interval || "10-20").trim();
+    const lEl = document.getElementById("hint-fragment-length");
+    const iEl = document.getElementById("hint-fragment-interval");
+    if (lEl) lEl.textContent = len;
+    if (iEl) iEl.textContent = ivl;
   } catch (e) {
     console.error("Settings preload error:", e);
   }
@@ -585,6 +594,12 @@ async function loadSettings() {
     if (settings.gateway_domain) document.getElementById("setting-gateway_domain").value = settings.gateway_domain;
     if (settings.clean_ips) document.getElementById("setting-clean_ips").value = settings.clean_ips;
     if (settings.default_domain) document.getElementById("setting-default_domain").value = settings.default_domain;
+    document.getElementById("setting-default_alpn").value = settings.default_alpn || "";
+    document.getElementById("setting-default_fingerprint").value = settings.default_fingerprint || "chrome";
+    document.getElementById("setting-fragment_enabled").value = (settings.fragment_enabled === "false") ? "false" : "true";
+    document.getElementById("setting-fragment_length").value = settings.fragment_length || "10-30";
+    document.getElementById("setting-fragment_interval").value = settings.fragment_interval || "10-20";
+    document.getElementById("setting-profile_title").value = settings.profile_title || "MILICONFIG Subscription";
     if (settings.outbound_mode) document.getElementById("setting-outbound_mode").value = settings.outbound_mode;
     if (settings.outbound_proxy) document.getElementById("setting-outbound_proxy").value = settings.outbound_proxy;
     if (settings.ech_domain) document.getElementById("setting-ech_domain").value = settings.ech_domain;
@@ -601,6 +616,12 @@ async function saveSettings(e) {
     gateway_domain: document.getElementById("setting-gateway_domain").value.trim(),
     clean_ips: document.getElementById("setting-clean_ips").value.trim(),
     default_domain: document.getElementById("setting-default_domain").value,
+    default_alpn: document.getElementById("setting-default_alpn").value.trim(),
+    default_fingerprint: document.getElementById("setting-default_fingerprint").value,
+    fragment_enabled: document.getElementById("setting-fragment_enabled").value,
+    fragment_length: document.getElementById("setting-fragment_length").value.trim(),
+    fragment_interval: document.getElementById("setting-fragment_interval").value.trim(),
+    profile_title: document.getElementById("setting-profile_title").value.trim(),
     outbound_mode: document.getElementById("setting-outbound_mode").value,
     outbound_proxy: document.getElementById("setting-outbound_proxy").value,
     ech_domain: document.getElementById("setting-ech_domain").value,

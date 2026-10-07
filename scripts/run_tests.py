@@ -29,6 +29,7 @@ test_files = [
     "test_railway.py",
     "test_unblocked.py",
     "test_tcp_proxy_novpn.py",
+    "test_client_params.py",
     "test_migration.py"
 ]
 

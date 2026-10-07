@@ -26,6 +26,7 @@ class Settings:
     DEFAULT_DOMAIN: str = os.environ.get("DEFAULT_DOMAIN", "localhost")
     DEFAULT_PATH: str = os.environ.get("DEFAULT_PATH", "/")
     DNS_SERVERS: str = os.environ.get("DNS_SERVERS", "1.1.1.1,8.8.8.8,https://223.5.5.5/dns-query")
+    PROFILE_TITLE: str = os.environ.get("PROFILE_TITLE", "MILICONFIG Subscription")
 
     # Railway TCP proxy (raw TCP ingress). It targets exactly one container port; the
     # HTTP/WS ingress or the ShadowSocks listener - see the properties below.

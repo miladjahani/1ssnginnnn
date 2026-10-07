@@ -63,6 +63,40 @@ class SubscriptionEngine:
             return configured
         return self.hostname_of(os.environ.get("GATEWAY_DOMAIN", ""))
 
+    # ---------------- CLIENT PARAMETERS (fp / alpn / fragment) ----------------
+    # ALPN must follow the transport: a WebSocket upgrade needs HTTP/1.1 (an HTTP/2
+    # capable edge such as Railway negotiates h2 when it is offered and the upgrade then
+    # fails), while xHTTP requires h2. Defaults mirror the StanNG panel.
+    VALID_FINGERPRINTS = ("chrome", "firefox", "safari", "ios", "android", "edge",
+                          "360", "qq", "random", "randomized")
+
+    def default_fingerprint(self) -> str:
+        configured = (repo.get_setting("default_fingerprint", "") or "").strip().lower()
+        if configured in self.VALID_FINGERPRINTS:
+            return configured
+        return "chrome"
+
+    def default_alpn(self) -> str:
+        return (repo.get_setting("default_alpn", "") or "").strip()
+
+    def resolve_alpn(self, node: Node) -> str:
+        """ALPN list: explicit node value -> operator default -> transport default."""
+        if (node.alpn or "").strip():
+            return node.alpn.strip()
+        configured = self.default_alpn()
+        if configured:
+            return configured
+        return "h2" if (node.network or "").lower() == "xhttp" else "http/1.1"
+
+    def fragment_settings(self) -> Optional[Dict[str, str]]:
+        """Anti-DPI ClientHello fragmentation values (used for sing-box output)."""
+        enabled = (repo.get_setting("fragment_enabled", "") or "").strip().lower()
+        if enabled in ("false", "0", "no", "off"):
+            return None
+        length = (repo.get_setting("fragment_length", "") or "").strip() or "10-30"
+        interval = (repo.get_setting("fragment_interval", "") or "").strip() or "10-20"
+        return {"size": length, "sleep": interval}
+
     def clean_ip_endpoints(self, limit: int = 2) -> List[str]:
         """
         Preferred ("clean") edge IPs used when the front domain's own IPs are filtered.
@@ -196,10 +230,11 @@ class SubscriptionEngine:
         path_encoded = urllib.parse.quote(path)
 
         if tls:
-            alpn_param = f"&alpn={node.alpn}" if node.alpn else "&alpn=h2,http/1.1"
             query_params = (
                 f"type={node.network}&security=tls&encryption=none"
-                f"&host={domain}&sni={domain}&path={path_encoded}{alpn_param}&fp=chrome"
+                f"&host={domain}&sni={domain}&path={path_encoded}"
+                f"&alpn={urllib.parse.quote(self.resolve_alpn(node), safe=',/')}"
+                f"&fp={self.default_fingerprint()}"
             )
         else:
             # Plain transport (e.g. Railway TCP proxy): no SNI, ALPN or TLS fingerprint.
@@ -220,10 +255,11 @@ class SubscriptionEngine:
         path_encoded = urllib.parse.quote(path)
 
         if tls:
-            alpn_param = f"&alpn={node.alpn}" if node.alpn else "&alpn=h2,http/1.1"
             query_params = (
                 f"type={node.network}&security=tls"
-                f"&host={domain}&sni={domain}&path={path_encoded}{alpn_param}&fp=chrome"
+                f"&host={domain}&sni={domain}&path={path_encoded}"
+                f"&alpn={urllib.parse.quote(self.resolve_alpn(node), safe=',/')}"
+                f"&fp={self.default_fingerprint()}"
             )
         else:
             query_params = (
@@ -279,10 +315,10 @@ class SubscriptionEngine:
                 "udp": True
             }
             if tls:
-                p_dict["client-fingerprint"] = "chrome"
+                p_dict["client-fingerprint"] = self.default_fingerprint()
                 p_dict["servername"] = domain
                 p_dict["skip-cert-verify"] = False
-                alpn_val = node.alpn or "h2,http/1.1"
+                alpn_val = self.resolve_alpn(node)
                 p_dict["alpn"] = [a.strip() for a in alpn_val.split(",") if a.strip()]
 
             ws_path = node.path or "/?ed=2048"
@@ -383,17 +419,16 @@ class SubscriptionEngine:
                 ob["tls"] = {
                     "enabled": True,
                     "server_name": domain,
-                    "insecure": False
-                }
-                alpn_val = node.alpn or "h2,http/1.1"
-                ob["tls"]["alpn"] = [a.strip() for a in alpn_val.split(",") if a.strip()]
-                # Fragment Anti-DPI for direct Railway connection (matches stanngv2 technique)
-                if "railway.app" in domain or "railway.app" in addr or "Fragment" in node.name or "ضد فیلتر" in node.name:
-                    ob["tls"]["fragment"] = {
+                    "insecure": False,
+                    "alpn": [a.strip() for a in self.resolve_alpn(node).split(",") if a.strip()],
+                    "utls": {
                         "enabled": True,
-                        "size": "10-30",
-                        "sleep": "10-20"
-                    }
+                        "fingerprint": self.default_fingerprint(),
+                    },
+                }
+                fragment = self.fragment_settings()
+                if fragment and ("Fragment" in node.name or "ضد فیلتر" in node.name):
+                    ob["tls"]["fragment"] = dict(fragment, enabled=True)
 
             ws_path = node.path or "/?ed=2048"
             if not ws_path.startswith("/"):

@@ -177,6 +177,15 @@
             <button class="btn btn-secondary" onclick="copySubUrl()">Copy Link</button>
           </div>
         </div>
+        <div class="glass" style="padding: 16px; margin-top: 18px; border-color: rgba(245, 158, 11, 0.4);">
+          <h4 style="font-size: 0.95rem; margin-bottom: 8px;">⚡ اگر کانفیگ‌ها «در دسترس نیست» نشان می‌دهند</h4>
+          <ul style="color: var(--text-muted); font-size: 0.83rem; line-height: 1.9; padding-inline-start: 18px;">
+            <li>در کلاینت (v2rayNG / Xray / Exclave) بخش <b>Fragment</b> را روشن کنید:
+              packets <code>1-3</code>، length <code id="hint-fragment-length">10-20</code>، interval <code id="hint-fragment-interval">10-20</code>.</li>
+            <li>ALPN را روی <code>http/1.1</code> بگذارید (نه <code>h2</code>) — نودهای WebSocket با h2 بالا نمی‌آیند.</li>
+            <li>اگر دامنه <code>*.up.railway.app</code> فیلتر است، در Settings دامنه/گیت‌وی خودتان را ست کنید یا از نودهای بدون TLS (TCP Proxy) استفاده کنید.</li>
+          </ul>
+        </div>
         <div style="margin-top: 18px; display: flex; gap: 10px; flex-wrap: wrap;">
           <a id="btn-open-clash" class="btn btn-secondary btn-sm" target="_blank">Download Clash YAML</a>
           <a id="btn-open-singbox" class="btn btn-secondary btn-sm" target="_blank">Download Sing-box JSON</a>
@@ -375,6 +384,42 @@
             <input type="text" id="setting-default_domain" placeholder="localhost">
           </div>
           <div class="form-group">
+            <label>ALPN — <span style="color: var(--text-muted);">leave empty for the safe default (WebSocket → <code>http/1.1</code>, xHTTP → <code>h2</code>)</span></label>
+            <input type="text" id="setting-default_alpn" placeholder="http/1.1">
+            <small style="color: var(--text-muted); font-size: 0.78rem;">Do not put <code>h2</code> first for WebSocket nodes: an HTTP/2-capable edge then picks h2 and the WebSocket upgrade fails.</small>
+          </div>
+          <div class="form-group">
+            <label>TLS Fingerprint (uTLS)</label>
+            <select id="setting-default_fingerprint">
+              <option value="chrome">chrome</option>
+              <option value="firefox">firefox</option>
+              <option value="safari">safari</option>
+              <option value="ios">ios</option>
+              <option value="android">android</option>
+              <option value="edge">edge</option>
+              <option value="360">360</option>
+              <option value="qq">qq</option>
+              <option value="random">random</option>
+              <option value="randomized">randomized</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label>Anti-DPI Fragment (sing-box output)</label>
+            <div style="display: flex; gap: 8px;">
+              <select id="setting-fragment_enabled" style="flex: 1;">
+                <option value="true">Enabled</option>
+                <option value="false">Disabled</option>
+              </select>
+              <input type="text" id="setting-fragment_length" placeholder="10-30" style="flex: 1;">
+              <input type="text" id="setting-fragment_interval" placeholder="10-20" style="flex: 1;">
+            </div>
+            <small style="color: var(--text-muted); font-size: 0.78rem;">ClientHello split size / sleep between fragments.</small>
+          </div>
+          <div class="form-group">
+            <label>Subscription Profile Title</label>
+            <input type="text" id="setting-profile_title" placeholder="MILICONFIG Subscription">
+          </div>
+          <div class="form-group">
             <label>Outbound Mode (qj)</label>
             <select id="setting-outbound_mode">
               <option value="">Default (Proxy first, fallback to Direct)</option>
@@ -453,6 +498,10 @@
         <div class="form-group">
           <label>Port</label>
           <input type="number" id="new-node-port" value="443" required>
+        </div>
+        <div class="form-group">
+          <label>ALPN (optional — leave empty for the automatic default)</label>
+          <input type="text" id="new-node-alpn" placeholder="http/1.1">
         </div>
         <div class="form-group">
           <label>Network</label>
